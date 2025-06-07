@@ -8,6 +8,8 @@ import torch
 import os
 import random
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
+
+from .TextDrawContext import TextDrawContext
 from ..config import color_mapping
 
 font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")       
@@ -50,71 +52,110 @@ def get_text_size(draw, text, font):
     text_height = bbox[3] - bbox[1]
     return text_width, text_height
 
-
-def draw_masked_text(text_mask, text,
-                     font_name, font_size,
-                     margins, line_spacing,
-                     position_x, position_y, 
-                     align, justify,
-                     rotation_angle, rotation_options):
+def draw_masked_text_helper(text_mask, text, font_name, font_size,
+                          margins, line_spacing, position_x, position_y,
+                          align, justify, rotation_angle, rotation_options,
+                          draw_callback):
+    """Helper function that handles text layout and calls the provided callback for actual drawing"""
     
-    # Create the drawing context        
     draw = ImageDraw.Draw(text_mask)
-
-    # Define font settings
+    
+    # Load font
     font_folder = "fonts"
     font_file = os.path.join(font_folder, font_name)
     resolved_font_path = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), font_file)
-    font = ImageFont.truetype(str(resolved_font_path), size=font_size) 
-
-     # Split the input text into lines
+    font = ImageFont.truetype(str(resolved_font_path), size=font_size)
+    
+    # Calculate dimensions
     text_lines = text.split('\n')
-
-    # Calculate the size of the text plus padding for the tallest line
     max_text_width = 0
     max_text_height = 0
-
+    
     for line in text_lines:
-        # Calculate the width and height of the current line
         line_width, line_height = get_text_size(draw, line, font)
- 
         line_height = line_height + line_spacing
         max_text_width = max(max_text_width, line_width)
         max_text_height = max(max_text_height, line_height)
     
-    # Get the image width and height
-    image_width, image_height = text_mask.size
-    image_center_x = image_width / 2
-    image_center_y = image_height / 2
+    # Create context object with all the parameters needed for drawing
+    ctx = TextDrawContext(
+        draw=draw,
+        font=font,
+        text_lines=text_lines,
+        max_text_width=max_text_width,
+        max_text_height=max_text_height,
+        image_width=text_mask.size[0],
+        image_height=text_mask.size[1],
+        margins=margins,
+        line_spacing=line_spacing,
+        position_x=position_x,
+        position_y=position_y,
+        align=align,
+        justify=justify,
+        rotation_angle=rotation_angle,
+        rotation_options=rotation_options
+    )
 
     text_pos_y = position_y
     sum_text_plot_y = 0
     text_height = max_text_height * len(text_lines)
+    last_text_plot_x = position_x  # Default position if no lines
 
     for line in text_lines:
-        # Calculate the width of the current line
         line_width, _ = get_text_size(draw, line, font)
-                            
-        # Get the text x and y positions for each line                                     
-        text_plot_x = position_x + justify_text(justify, image_width, line_width, margins)
-        text_plot_y = align_text(align, image_height, text_height, text_pos_y, margins)
+        text_plot_x = position_x + justify_text(justify, ctx.image_width, line_width, margins)
+        text_plot_y = align_text(align, ctx.image_height, text_height, text_pos_y, margins)
         
-        # Add the current line to the text mask
-        draw.text((text_plot_x, text_plot_y), line, fill=255, font=font)
+        draw_callback(ctx, line, text_plot_x, text_plot_y)
         
-        text_pos_y += max_text_height  # Move down for the next line
-        sum_text_plot_y += text_plot_y     # Sum the y positions
+        text_pos_y += max_text_height
+        sum_text_plot_y += text_plot_y
+        last_text_plot_x = text_plot_x
 
-    # Calculate centers for rotation
-    text_center_x = text_plot_x + max_text_width / 2
-    text_center_y = sum_text_plot_y / len(text_lines)
+    # Handle rotation
+    text_center_x = last_text_plot_x + max_text_width / 2
+    text_center_y = sum_text_plot_y / max(len(text_lines), 1)  # Avoid division by zero
+    image_center_x = text_mask.size[0] / 2
+    image_center_y = text_mask.size[1] / 2
 
     if rotation_options == "text center":
-        rotated_text_mask = text_mask.rotate(rotation_angle, center=(text_center_x, text_center_y))
+        return text_mask.rotate(rotation_angle, center=(text_center_x, text_center_y))
     elif rotation_options == "image center":    
-        rotated_text_mask = text_mask.rotate(rotation_angle, center=(image_center_x, image_center_y))
-        
-    return rotated_text_mask        
+        return text_mask.rotate(rotation_angle, center=(image_center_x, image_center_y))
+    
+    return text_mask
+
+def draw_masked_text(text_mask, text, font_name, font_size,
+                     margins, line_spacing, position_x, position_y,
+                     align, justify, rotation_angle, rotation_options):
+    """Simple text drawing without outline"""
+
+    def simple_draw(ctx, line, x, y):
+        ctx.draw.text((x, y), line, fill=255, font=ctx.font)
+
+    return draw_masked_text_helper(text_mask, text, font_name, font_size,
+                                   margins, line_spacing, position_x, position_y,
+                                   align, justify, rotation_angle, rotation_options,
+                                   simple_draw)
+
+def draw_masked_text_outline(text_mask, text, font_name, font_size,
+                             margins, line_spacing, position_x, position_y,
+                             align, justify, rotation_angle, rotation_options,
+                             outline_width):
+    """Creates a mask for text outline"""
+
+    def outline_draw(ctx, line, x, y):
+        for dx in range(-outline_width, outline_width + 1):
+            for dy in range(-outline_width, outline_width + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                ctx.draw.text((x + dx, y + dy), line, fill=255, font=ctx.font)
+
+    return draw_masked_text_helper(text_mask, text, font_name, font_size,
+                                   margins, line_spacing, position_x, position_y,
+                                   align, justify, rotation_angle, rotation_options,
+                                   outline_draw)
+
 
 def draw_text_on_image(draw, y_position, bar_width, bar_height, text, font, text_color, font_outline):
 
@@ -170,7 +211,7 @@ def get_font_size(draw, text, max_width, max_height, font_path, max_font_size):
     font_size = max_font_size
     font = ImageFont.truetype(str(font_path), size=font_size)
 
-     # Get the first two lines
+    # Get the first two lines
     text_lines = text.split('\n')[:2]
     
     if len(text_lines) == 2:
@@ -481,4 +522,3 @@ def interpolate_color(color0, color1, t):
     Interpolate between two colors.
     """
     return tuple(int(c0 * (1 - t) + c1 * t) for c0, c1 in zip(color0, color1))
-    

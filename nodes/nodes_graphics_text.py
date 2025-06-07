@@ -55,9 +55,9 @@ class CR_OverlayText:
     @classmethod
     def INPUT_TYPES(s):
 
-        font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")       
+        font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fonts")
         file_list = [f for f in os.listdir(font_dir) if os.path.isfile(os.path.join(font_dir, f)) and f.lower().endswith(".ttf")]
-                        
+
         return {"required": {
                 "image": ("IMAGE",),
                 "text": ("STRING", {"multiline": True, "default": "text"}),
@@ -73,46 +73,112 @@ class CR_OverlayText:
                 "rotation_angle": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 0.1}),
                 "rotation_options": (ROTATE_OPTIONS,),
                 },
-                "optional": {"font_color_hex": ("STRING", {"multiline": False, "default": "#000000"})
-                }        
-    }
+                "optional": {
+                    "font_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
+                    "outline_color_hex": ("STRING", {"multiline": False, "default": "#ffffff"}),
+                    "outline_width": ("INT", {"default": 1, "min": 0, "max": 1024}),
+                    "outline_opacity": ("FLOAT", {"default": 0.5, "min": 0, "max": 1}),
+                }}
 
     RETURN_TYPES = ("IMAGE", "STRING",)
     RETURN_NAMES = ("IMAGE", "show_help",)
     FUNCTION = "overlay_text"
     CATEGORY = icons.get("Comfyroll/Graphics/Text")
 
-    def overlay_text(self, image, text, font_name, font_size, font_color,  
-                     margins, line_spacing,
-                     position_x, position_y,
-                     align, justify,
-                     rotation_angle, rotation_options,
-                     font_color_hex='#000000'):
+    def draw_text_with_outline(self, image, position, text, font, fill,
+                               outline_color_hex, outline_width=1, outline_opacity=0.5):
+        """
+        Draws text with an outlined effect on the provided image. The method first renders the text's outline
+        using the specified color, width, and opacity, then overlays the actual text on top. Text outlines
+        are achieved by drawing the text multiple times at slight offsets. Finally, the method composites the
+        outlined text into the original image while preserving transparency.
 
-        # Get RGB values for the text color  
+        Args:
+            image: The image object to draw on (PIL.Image.Image). Must be in "RGBA" mode. If not, it is converted.
+            position (Tuple[int, int]): The (x, y) coordinates where the text should be drawn.
+            text (str): The text content to be rendered on the image.
+            font: The PIL.ImageFont.ImageFont object representing the font style and size.
+            fill (Tuple[int, int, int, int]): The RGBA color tuple used to fill the inner text.
+            outline_color_hex (str): Hexadecimal color string defining the outline's color, e.g., "#RRGGBB".
+            outline_width (int, optional): The width of the text outline. Defaults to 1.
+            outline_opacity (float, optional): The opacity of the text outline, where 0.0 is fully transparent
+                and 1.0 is fully opaque. Defaults to 0.5.
+
+        Raises:
+            ValueError: Raised if the `image` format is incompatible or other arguments are invalid.
+
+        Returns:
+            None
+        """
+
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
+
+        outline_rgb = tuple(int(outline_color_hex[i:i+2], 16) for i in (1, 3, 5))
+
+        x, y = position
+        temp = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        temp_draw = ImageDraw.Draw(temp)
+
+        for dx in range(-outline_width, outline_width + 1):
+            for dy in range(-outline_width, outline_width + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                temp_draw.text((x + dx, y + dy), text, font=font, fill=outline_rgb + (255,))
+
+        alpha_mask = temp.split()[-1].point(lambda a: int(a * outline_opacity))
+        temp.putalpha(alpha_mask)
+
+        image.alpha_composite(temp)  # this now works properly
+
+        draw = ImageDraw.Draw(image)
+        draw.text(position, text, font=font, fill=fill)
+
+    # Modified overlay_text method in CR_OverlayText class
+    def overlay_text(self, image, text, font_name, font_size, font_color,
+                     margins, line_spacing, position_x, position_y,
+                     align, justify, rotation_angle, rotation_options,
+                     font_color_hex='#000000',
+                     outline_color_hex='#ffffff',
+                     outline_width=1,
+                     outline_opacity=0.5):
+
+        # Get RGB values for colors
         text_color = get_color_values(font_color, font_color_hex, color_mapping)
-      
-        # Convert tensor images
+        outline_color = get_color_values('custom', outline_color_hex, color_mapping)
+
+        # Convert tensor image
         image_3d = image[0, :, :, :]
-
-        # Create PIL images for the text and background layers and text mask
         back_image = tensor2pil(image_3d)
-        text_image = Image.new('RGB', back_image.size, text_color)
-        text_mask = Image.new('L', back_image.size)
-        
-        # Draw the text on the text mask
-        rotated_text_mask = draw_masked_text(text_mask, text, font_name, font_size,
-                                             margins, line_spacing, 
-                                             position_x, position_y,
-                                             align, justify,
-                                             rotation_angle, rotation_options)
 
-        # Composite the text image onto the background image using the rotated text mask       
-        image_out = Image.composite(text_image, back_image, rotated_text_mask)       
+        # Create necessary layers
+        text_image = Image.new('RGB', back_image.size, text_color)
+        outline_image = Image.new('RGB', back_image.size, outline_color)
+        text_mask = Image.new('L', back_image.size)
+        outline_mask = Image.new('L', back_image.size)
+
+        # Create masks
+        image_out = back_image
+
+        if outline_width > 0:
+            rotated_outline_mask = draw_masked_text_outline(outline_mask, text, font_name, font_size,
+                                                            margins, line_spacing, position_x, position_y,
+                                                            align, justify, rotation_angle, rotation_options,
+                                                            outline_width)
+
+            # Apply outline with opacity
+            outline_mask_with_opacity = ImageEnhance.Brightness(rotated_outline_mask).enhance(outline_opacity)
+            image_out = Image.composite(outline_image, image_out, outline_mask_with_opacity)
+
+        # Draw and apply the main text
+        rotated_text_mask = draw_masked_text(text_mask, text, font_name, font_size,
+                                             margins, line_spacing, position_x, position_y,
+                                             align, justify, rotation_angle, rotation_options)
+
+        image_out = Image.composite(text_image, image_out, rotated_text_mask)
 
         show_help = "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes/wiki/Text-Nodes#cr-overlay-text"
-        
-        # Convert the PIL image back to a torch tensor
+
         return (pil2tensor(image_out), show_help,)
 
 #---------------------------------------------------------------------------------------------------------------------#
