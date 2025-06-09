@@ -76,7 +76,7 @@ class CR_OverlayText:
                 "optional": {
                     "font_color_hex": ("STRING", {"multiline": False, "default": "#000000"}),
                     "outline_color_hex": ("STRING", {"multiline": False, "default": "#ffffff"}),
-                    "outline_width": ("INT", {"default": 1, "min": 0, "max": 1024}),
+                    "outline_width": ("INT", {"default": 3, "min": 0, "max": 1024}),
                     "outline_opacity": ("FLOAT", {"default": 0.5, "min": 0, "max": 1}),
                 }}
 
